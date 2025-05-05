@@ -144,23 +144,31 @@ main_agent = Agent(
     system_prompt=(
         "You are a data analyst and a friendly coworker."
         "Use sql_generation_tool to find one or more queries within the prompt and return the associated SQL."
-        "Return the queries to the user but do not answer them yourself."
+        "If there are multiple queries, return the SQL in different code blocks."
+        "Return the queries to the user but do not execute them yourself."
         "If the user is not asking about data, you can also answer general questions about life, the universe, and everything."
     )
 )
 
+@main_agent.tool
+async def sql_generation_tool(ctx: RunContext[str], prompt: str) -> str:
+    """Generate SQL block or blocks for the given query if applicable."""
+    r = await sql_generation_agent.run(
+        user_prompt=prompt,
+        deps=prompt
+    )
+    return r.output
+
 sql_generation_agent = Agent( model , output_type=str ,
                               system_prompt=(
-                                  "Use get_catalog to get the data catalog. "
-                                  "Your job is to find one or more queries within the prompt which can be answered by the data tables described in the data catalog. "
-                                  "You should return the queries in a list format. "
+                                  "Use get_catalog_sql_gen to get the data catalog. "
+                                  "Use the query_detection_tool to find one or more queries within the prompt which can be answered by the data tables described in the data catalog. "
+                                  "Your job is to convert the queries into SQL statements. "
                                   "If you cannot find any queries, return an empty list. "
-                                  "The queries should be in the form of a question. "
-                                  "Ensure that the queries are clear and concise."
                                 ),
 )
 
-@main_agent.tool
+@sql_generation_agent.tool
 async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> list[str]:
     r = await query_detection_agent.run(
         user_prompt=prompt,
@@ -168,12 +176,18 @@ async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> list[str
     )
     return r.output
 
+@sql_generation_agent.tool
+async def get_catalog_sql_gen(ctx: RunContext[None]) -> str:
+    """Get the data catalog."""
+    return json.dumps(data_catalog)
+
 # Define the agent to find one or more queries within a prompt which can be answered by the data tables
 query_detection_agent = Agent( model , output_type=list[str] , 
                               system_prompt=(
-                                  "Use get_catalog to get the data catalog. "                                
+                                  "Use get_catalog_detect to get the data catalog. "                                
                                   "Your job is to find one or more queries within the prompt which can be answered by the data tables described in the data catalog. "
                                   "You should return the queries in a list format. "
+                                  "Your response should only include the queries, not any other text. "
                                   "If you cannot find any queries, return an empty list. "
                                   "The queries should be in the form of a question. "
                                   "Ensure that the queries are clear and concise."
@@ -181,11 +195,11 @@ query_detection_agent = Agent( model , output_type=list[str] ,
 )
 
 @query_detection_agent.tool
-async def get_catalog(ctx: RunContext[None]) -> str:
+async def get_catalog_detect(ctx: RunContext[None]) -> str:
     """Get the data catalog."""
     return json.dumps(data_catalog)
 
-# result = main_agent.run_sync( "When was the USA founded?" )
-result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
+result = main_agent.run_sync( "When was the USA founded?" )
+# result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
 print(result.output)
 print(result.all_messages())
