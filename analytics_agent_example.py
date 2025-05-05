@@ -199,7 +199,9 @@ async def get_catalog_detect(ctx: RunContext[None]) -> str:
     """Get the data catalog."""
     return json.dumps(data_catalog)
 
-result = main_agent.run_sync( "When was the USA founded?" )
+# result = main_agent.run_sync( "When was the USA founded?" )
 # result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
+# result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023?" )
+result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023 and who is the account executive?" )
 print(result.output)
 print(result.all_messages())
