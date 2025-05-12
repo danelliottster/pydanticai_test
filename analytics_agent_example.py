@@ -11,11 +11,14 @@
 """
 
 import pandas as pd
+import duckdb
+from dataclasses import dataclass
+import json
+from tabulate import tabulate
 from pydantic_ai import Agent
 from pydantic_ai.models.gemini import GeminiModel
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
 from pydantic_ai import RunContext
-import json
 
 
 ###############################################################################
@@ -30,6 +33,10 @@ opps_data_df.columns = opps_data_df.columns.str.replace(" ", "_")
 opps_data_df.columns = opps_data_df.columns.str.lower()
 opps_data_df.columns = opps_data_df.columns.str.replace("-", "_")
 opps_data_df.columns = opps_data_df.columns.str.replace(".", "_")
+opps_data_df["revenue"] = opps_data_df["revenue"].str.replace("$", "", regex=False)  # Remove dollar sign
+opps_data_df["revenue"] = opps_data_df["revenue"].str.replace(",", "", regex=False)  # Remove commas
+opps_data_df["revenue"] = opps_data_df["revenue"].astype(float)  # Convert to float
+
 
 # drop duplicate agency names
 agencies_df = sales_by_agency_df[["ordering_gvt_agency", "ordering_agency_owner", "govt_agency_roll_up_vertical"]]
@@ -50,7 +57,7 @@ opps_data_df = opps_data_df.drop(columns=["quarter_year","deal_reg_y/n"])
 data_catalog = {
     "agencies_df": {
         "dataframe": "agencies_df",
-        "description": "Some basic information about the customers Sterling sells to.",
+        "description": "Some basic information about the customers Sterling sells to. This includes the name of the customer, the name of the account executive associated with the customer, and the business vertical of the customer.",
         "columns": {
             "ordering_gvt_agency": {
                 "description": "The name of customer",
@@ -66,9 +73,9 @@ data_catalog = {
             }
         }
     },
-    "opps_data": {
+    "opps_data_df": {
         "dataframe": "opps_data_df",
-        "description": "Opportunities data",
+        "description": "Information about the opportunities Sterling has sold to customers.  This includes dates, the sales order number, the date of the sales order, the quarter and year of the opportunity, the name of the opportunity, the enterprise product associated with the opportunity if applicable, the first level category of the product(s) associated with the opportunity, the revenue associated with the opportunity, and the margin associated with the opportunity.",
         "columns": {
             "sales_order_number": {
                 "description": "The sales order number",
@@ -127,69 +134,96 @@ model = GeminiModel(
     'gemini-2.0-flash', provider=GoogleGLAProvider(api_key=gemini_key)
     )
 
-# # define the main agent
-# main_agent = Agent(
-#     model,
-#     system_prompt=(
-#         "You are a data analyst and a friendly coworker."
-#         "Use query_detection_tool to find one or more queries within the prompt."
-#         "Return the queries to the user but do not answer them yourself."
-#         "If the user is not asking about data, you can also answer general questions about life, the universe, and everything."
-#     )
-# )
-
 # define the main agent
 main_agent = Agent(
     model,
     system_prompt=(
         "You are a data analyst and a friendly coworker."
-        "Use sql_generation_tool to find one or more queries within the prompt and return the associated SQL."
-        "If there are multiple queries, return the SQL in different code blocks."
-        "Return the queries to the user but do not execute them yourself."
+        "Use query_detection_tool to find one or more queries which can be answered using our data lakehouse and return the associated context."
         "If the user is not asking about data, you can also answer general questions about life, the universe, and everything."
     )
 )
 
-@main_agent.tool
-async def sql_generation_tool(ctx: RunContext[str], prompt: str) -> str:
-    """Generate SQL block or blocks for the given query if applicable."""
-    r = await sql_generation_agent.run(
-        user_prompt=prompt,
-        deps=prompt
-    )
-    return r.output
-
 sql_generation_agent = Agent( model , output_type=str ,
                               system_prompt=(
-                                  "Use get_catalog_sql_gen to get the data catalog. "
-                                  "Use the query_detection_tool to find one or more queries within the prompt which can be answered by the data tables described in the data catalog. "
-                                  "Your job is to convert the queries into SQL statements. "
+                                #   "Use get_catalog_sql tool to get the data catalog. "
+                                  "Your job is to convert the queries into SQL statements which could be used to query the data tables described in the data catalog."
+                                  "You will be given a query and you should return the SQL statement which could be used to answer the query."
+                                  "Your response should only include the SQL statement and should not include any text formatting."
+                                  "You will also be given the data catalog which describes the data tables and their columns."
                                   "If you cannot find any queries, return an empty list. "
-                                ),
+                                )
 )
 
-@sql_generation_agent.tool
-async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> list[str]:
+@dataclass
+class QueryResult:
+    query: str
+    sql: str
+    output: pd.DataFrame = None
+    summary: str = None
+
+def prep_sql_string( sql_in ) :
+    """Prepare the SQL string for execution."""
+    # remove newlines and extra spaces
+    sql_out = sql_in.replace("\n", " ")
+    sql_out = sql_out.replace("```", " ")
+    sql_out = sql_out.replace("sql", " ")
+    sql_out = sql_out.strip()
+    sql_out = " ".join(sql_out.split())
+    return sql_out
+
+@main_agent.tool
+async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> str:
+    """Find one or more queries within the prompt which can be answered by the data tables.  Answer the queries using the data tables and return the results."""
     r = await query_detection_agent.run(
         user_prompt=prompt,
         deps=prompt
     )
-    return r.output
 
-@sql_generation_agent.tool
-async def get_catalog_sql_gen(ctx: RunContext[None]) -> str:
-    """Get the data catalog."""
-    return json.dumps(data_catalog)
+    tool_response = ""
+    ### iterate over the discovered queries
+    for query_i , query in enumerate(r.output):
+        if query_i > 0:
+            tool_response += "\n\n"
+        # Generate SQL for the query
+        print(f"Generating SQL for query: {query}")
+        sql = await sql_generation_agent.run(
+            user_prompt="Using the following data catalog:\n" + json.dumps(data_catalog) + "\n\n return the SQL needed to answer the following query: " + query,
+            deps=query
+        )
+        prepped_sql = prep_sql_string(sql.output)
+        print(f"Generated SQL: {sql.output}")
+        print(f"Prepped SQL: {prepped_sql}")
+        # execute the SQL and get the resulting table
+        result = duckdb.query(prepped_sql).to_df()
+        # summarize the table
+        # if the result has one cell, return the cell's value
+        tool_response += query + "\n"
+        if result.shape == (1, 1):
+            summary = str( result.iloc[0, 0] )
+        # if the result has one row, return only the summary which is each column header followed by the value
+        elif result.shape[0] == 1:
+            summary = ""
+            for coli , col in enumerate(result.columns):
+                summary += str( col + ": " + str(result.iloc[0, coli]) )
+        # if the result has more than one row, return the table and the summary
+        elif result.shape[0] > 1:
+            summary = tabulate(result, headers="keys", tablefmt="grid")
+        
+        tool_response += summary
+
+        return tool_response
 
 # Define the agent to find one or more queries within a prompt which can be answered by the data tables
 query_detection_agent = Agent( model , output_type=list[str] , 
                               system_prompt=(
-                                  "Use get_catalog_detect to get the data catalog. "                                
-                                  "Your job is to find one or more queries within the prompt which can be answered by the data tables described in the data catalog. "
+                                #   "Use get_table_desc to get some basic information about the avaiable tables. "
+                                "Use get_catalog_detect to get the data catalog. "
+                                  "Your job is to find and refine one or more natural language queries within the prompt which can be answered by the data tables described in the data catalog. "
                                   "You should return the queries in a list format. "
                                   "Your response should only include the queries, not any other text. "
                                   "If you cannot find any queries, return an empty list. "
-                                  "The queries should be in the form of a question. "
+                                  "The queries should be in the form of a question."
                                   "Ensure that the queries are clear and concise."
                                 ),
 )
@@ -202,6 +236,7 @@ async def get_catalog_detect(ctx: RunContext[None]) -> str:
 # result = main_agent.run_sync( "When was the USA founded?" )
 # result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
 # result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023?" )
-result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023 and who is the account executive?" )
+# result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023 and who is the account executive?" )
+result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical in 2024?" )
 print(result.output)
 print(result.all_messages())
