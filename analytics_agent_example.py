@@ -140,11 +140,12 @@ main_agent = Agent(
     system_prompt=(
         "You are a data analyst and a friendly coworker."
         "Use query_detection_tool to find one or more queries which can be answered using our data lakehouse and return the associated context."
+        "If the query_detection_tool returns an html table, include the table in your response."
         "If the user is not asking about data, you can also answer general questions about life, the universe, and everything."
     )
 )
 import logfire
-logfire.configure(token="pylf_v1_us_3VCs49q8Gxp5971kyVw9ygkhg4BFPws76KX05GsQhjGR")
+logfire.configure(token="pylf_v1_us_3VCs49q8Gxp5971kyVw9ygkhg4BFPws76KX05GsQhjGR" , scrubbing=False)
 main_agent.instrument_all()
 
 sql_generation_agent = Agent( model , output_type=str ,
@@ -153,6 +154,8 @@ sql_generation_agent = Agent( model , output_type=str ,
                                   "You will be given a query and you should return the SQL statement which could be used to answer the query."
                                   "Your response should only include the SQL statement and should not include any text formatting."
                                   "You will also be given the data catalog which describes the data tables and their columns."
+                                  "All strings should be single quoted."
+                                  "All comparisons should be case insensitive."
                                   "If you cannot find any queries, return an empty list. "
                                 )
 )
@@ -170,6 +173,7 @@ def prep_sql_string( sql_in ) :
     sql_out = sql_in.replace("\n", " ")
     sql_out = sql_out.replace("```", " ")
     sql_out = sql_out.replace("sql", " ")
+    sql_out = sql_out.replace("\"", "'")
     sql_out = sql_out.strip()
     sql_out = " ".join(sql_out.split())
     return sql_out
@@ -212,6 +216,9 @@ async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> list[dic
             # summary = tabulate(result, headers="keys", tablefmt="html")
             summary = result.to_html()
         
+        if result.empty:
+            summary = "No results found."
+
         tool_response += [{"query": query, "summary": summary}]
 
     return tool_response
@@ -230,15 +237,25 @@ query_detection_agent = Agent( model , output_type=list[str] ,
 )
 
 @query_detection_agent.tool_plain
-async def get_catalog_detect(ctx: RunContext[None]) -> str:
+# async def get_catalog_detect(ctx: RunContext[None]) -> str:
+async def get_catalog_detect() -> str:
     """Get the data catalog."""
     return json.dumps(data_catalog)
 
 # result = main_agent.run_sync( "When was the USA founded?" )
+
 # result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
 # result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023?" )
 # result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023 and who is the account executive?" )
-result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical in 2024?" ) #this one is whack!
+# result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical in 2024?" )
 # result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical?" )
+
+result = main_agent.run_sync( "What customers are handled by austin moore?" )
+
+# result = main_agent.run_sync( "Which of our customers are a part of the Army?" )
+# result = main_agent.run_sync( "Which of our customers are a part of the Army vertical?" )
+# result = main_agent.run_sync( "What sales did we make to Army - Yuma Proving Ground in 2024?" ) # it misunderstood the request and computed the revenue
+# result = main_agent.run_sync( "What opportunities did we have with Army - Yuma Proving Ground in 2024?" ) # it misunderstood the request and computed the revenue
+
 print(result.output)
 print(result.all_messages())
