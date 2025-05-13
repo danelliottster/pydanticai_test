@@ -14,8 +14,8 @@ import pandas as pd
 import duckdb
 from dataclasses import dataclass
 import json
-from tabulate import tabulate
-from pydantic_ai import Agent
+# from tabulate import tabulate
+from pydantic_ai import Agent , Tool , ModelRetry
 from pydantic_ai.models.gemini import GeminiModel
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
 from pydantic_ai import RunContext
@@ -157,15 +157,9 @@ sql_generation_agent = Agent( model , output_type=str ,
                                   "All strings should be single quoted."
                                   "All comparisons should be case insensitive."
                                   "If you cannot find any queries, return an empty list. "
-                                )
+                                ),
+                                max_retries=3
 )
-
-@dataclass
-class QueryResult:
-    query: str
-    sql: str
-    output: pd.DataFrame = None
-    summary: str = None
 
 def prep_sql_string( sql_in ) :
     """Prepare the SQL string for execution."""
@@ -178,6 +172,27 @@ def prep_sql_string( sql_in ) :
     sql_out = " ".join(sql_out.split())
     return sql_out
 
+# @sql_generation_agent.output_validator
+# async def sql_generation_agent_output_validator( ctx: RunContext[str] , output: str ) -> str:
+#     """Validate the output of the SQL generation agent."""
+#     # check if the output is a valid SQL statement
+#     if not isinstance(output, str):
+#         raise ModelRetry("Output is not a string.")
+#     cleaned_output = prep_sql_string(output)
+    
+#     if "\"" in cleaned_output:
+#         raise ModelRetry("Output contains double quotes.")
+    
+#     # check if the table names are valid
+#     for table_name in data_catalog.keys():
+#         if table_name not in cleaned_output:
+#             raise ModelRetry(f"Output does not contain the table name {table_name}.")
+
+
+
+#     return output
+
+
 @main_agent.tool
 async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> list[dict[str,str]]:
     """Find one or more queries within the prompt which can be answered by the data tables.  Answer the queries using the data tables and return the results."""
@@ -186,47 +201,55 @@ async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> list[dic
         deps=prompt
     )
 
-    tool_response = []
+    tool_response = [] ; max_sql_retries = 3
     ### iterate over the discovered queries
     for query_i , query in enumerate(r.output):
-        if query_i > 0:
-            tool_response += "\n\n"
-        # Generate SQL for the query
-        print(f"Generating SQL for query: {query}")
-        sql = await sql_generation_agent.run(
-            user_prompt="Using the following data catalog:\n" + json.dumps(data_catalog) + "\n\n return the SQL needed to answer the following query: " + query,
-            deps=query
-        )
-        prepped_sql = prep_sql_string(sql.output)
-        print(f"Generated SQL: {sql.output}")
-        print(f"Prepped SQL: {prepped_sql}")
-        # execute the SQL and get the resulting table
-        result = duckdb.query(prepped_sql).to_df()
-        # summarize the table
-        # if the result has one cell, return the cell's value
-        if result.shape == (1, 1):
-            summary = str( result.iloc[0, 0] )
-        # if the result has one row, return only the summary which is each column header followed by the value
-        elif result.shape[0] == 1:
-            summary = ""
-            for coli , col in enumerate(result.columns):
-                summary += str( col + ": " + str(result.iloc[0, coli]) )
-        # if the result has more than one row, return the table and the summary
-        elif result.shape[0] > 1:
-            # summary = tabulate(result, headers="keys", tablefmt="html")
-            summary = result.to_html()
-        
-        if result.empty:
-            summary = "No results found."
-
-        tool_response += [{"query": query, "summary": summary}]
+        sql_success = False ; sql_retries = 0
+        while not sql_success and sql_retries < max_sql_retries:
+            try:
+                # Generate SQL for the query
+                print(f"Generating SQL for query: {query}")
+                sql = await sql_generation_agent.run(
+                    user_prompt="Using the following data catalog:\n" + json.dumps(data_catalog) + "\n\n return the SQL needed to answer the following query: " + query,
+                    deps=query
+                )
+                prepped_sql = prep_sql_string(sql.output)
+                print(f"Generated SQL: {sql.output}")
+                print(f"Prepped SQL: {prepped_sql}")
+                # execute the SQL and get the resulting table
+                result = duckdb.query(prepped_sql).to_df()
+                # summarize the table
+                # if the result has one cell, return the cell's value
+                if result.shape == (1, 1):
+                    summary = str( result.iloc[0, 0] )
+                # if the result has one row, return only the summary which is each column header followed by the value
+                elif result.shape[0] == 1:
+                    summary = ""
+                    for coli , col in enumerate(result.columns):
+                        summary += str( col + ": " + str(result.iloc[0, coli]) )
+                # if the result has more than one row, return the table and the summary
+                elif result.shape[0] > 1:
+                    summary = result.to_html()
+                elif result.empty:
+                    summary = "No results found."
+                    continue
+                tool_response += [{"query": query, "summary": summary}]
+                sql_success = True
+            except Exception as e:
+                print(f"Error generating SQL for query {query}: {e}")
+                sql_retries += 1
+        if not sql_success:
+            print(f"Failed to generate SQL for query {query} after {max_sql_retries} retries.")
+            tool_response += [{"query": query, "summary": "No results found in database."}]
 
     return tool_response
 
 # Define the agent to find one or more queries within a prompt which can be answered by the data tables
+async def get_catalog_detect() -> str:
+    """Get the data catalog."""
+    return json.dumps(data_catalog)
 query_detection_agent = Agent( model , output_type=list[str] , 
                               system_prompt=(
-                                "Use get_catalog_detect to get the data catalog for use in determining what queries can be answered. Only call this function if you need to and never more than once. "
                                   "Your job is to find and refine one or more natural language queries within the prompt which can be answered by the data tables described in the data catalog. "
                                   "You should return the queries in a list format. "
                                   "Your response should only include the queries, not any other text. "
@@ -234,23 +257,23 @@ query_detection_agent = Agent( model , output_type=list[str] ,
                                   "The queries should be in the form of a question."
                                   "Ensure that the queries are clear and concise."
                                 ),
+                                tools=[Tool(get_catalog_detect, name="get_catalog_detect", description="Get the data catalog for use in determining what queries can be answered.",max_retries=1)],
 )
 
-@query_detection_agent.tool_plain
-# async def get_catalog_detect(ctx: RunContext[None]) -> str:
-async def get_catalog_detect() -> str:
-    """Get the data catalog."""
-    return json.dumps(data_catalog)
+# @query_detection_agent.tool_plain
+# async def get_catalog_detect() -> str:
+#     """Get the data catalog."""
+#     return json.dumps(data_catalog)
 
 # result = main_agent.run_sync( "When was the USA founded?" )
 
 # result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
 # result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023?" )
-# result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023 and who is the account executive?" )
+result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023 and who is the account executive?" )
 # result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical in 2024?" )
 # result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical?" )
 
-result = main_agent.run_sync( "What customers are handled by austin moore?" )
+# result = main_agent.run_sync( "What customers are handled by austin moore?" )
 
 # result = main_agent.run_sync( "Which of our customers are a part of the Army?" )
 # result = main_agent.run_sync( "Which of our customers are a part of the Army vertical?" )
