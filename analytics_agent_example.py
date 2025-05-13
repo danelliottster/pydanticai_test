@@ -143,10 +143,12 @@ main_agent = Agent(
         "If the user is not asking about data, you can also answer general questions about life, the universe, and everything."
     )
 )
+import logfire
+logfire.configure(token="pylf_v1_us_3VCs49q8Gxp5971kyVw9ygkhg4BFPws76KX05GsQhjGR")
+main_agent.instrument_all()
 
 sql_generation_agent = Agent( model , output_type=str ,
                               system_prompt=(
-                                #   "Use get_catalog_sql tool to get the data catalog. "
                                   "Your job is to convert the queries into SQL statements which could be used to query the data tables described in the data catalog."
                                   "You will be given a query and you should return the SQL statement which could be used to answer the query."
                                   "Your response should only include the SQL statement and should not include any text formatting."
@@ -173,14 +175,14 @@ def prep_sql_string( sql_in ) :
     return sql_out
 
 @main_agent.tool
-async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> str:
+async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> list[dict[str,str]]:
     """Find one or more queries within the prompt which can be answered by the data tables.  Answer the queries using the data tables and return the results."""
     r = await query_detection_agent.run(
         user_prompt=prompt,
         deps=prompt
     )
 
-    tool_response = ""
+    tool_response = []
     ### iterate over the discovered queries
     for query_i , query in enumerate(r.output):
         if query_i > 0:
@@ -198,7 +200,6 @@ async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> str:
         result = duckdb.query(prepped_sql).to_df()
         # summarize the table
         # if the result has one cell, return the cell's value
-        tool_response += query + "\n"
         if result.shape == (1, 1):
             summary = str( result.iloc[0, 0] )
         # if the result has one row, return only the summary which is each column header followed by the value
@@ -208,17 +209,17 @@ async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> str:
                 summary += str( col + ": " + str(result.iloc[0, coli]) )
         # if the result has more than one row, return the table and the summary
         elif result.shape[0] > 1:
-            summary = tabulate(result, headers="keys", tablefmt="grid")
+            # summary = tabulate(result, headers="keys", tablefmt="html")
+            summary = result.to_html()
         
-        tool_response += summary
+        tool_response += [{"query": query, "summary": summary}]
 
-        return tool_response
+    return tool_response
 
 # Define the agent to find one or more queries within a prompt which can be answered by the data tables
 query_detection_agent = Agent( model , output_type=list[str] , 
                               system_prompt=(
-                                #   "Use get_table_desc to get some basic information about the avaiable tables. "
-                                "Use get_catalog_detect to get the data catalog. "
+                                "Use get_catalog_detect to get the data catalog for use in determining what queries can be answered. Only call this function if you need to and never more than once. "
                                   "Your job is to find and refine one or more natural language queries within the prompt which can be answered by the data tables described in the data catalog. "
                                   "You should return the queries in a list format. "
                                   "Your response should only include the queries, not any other text. "
@@ -228,7 +229,7 @@ query_detection_agent = Agent( model , output_type=list[str] ,
                                 ),
 )
 
-@query_detection_agent.tool
+@query_detection_agent.tool_plain
 async def get_catalog_detect(ctx: RunContext[None]) -> str:
     """Get the data catalog."""
     return json.dumps(data_catalog)
@@ -237,6 +238,7 @@ async def get_catalog_detect(ctx: RunContext[None]) -> str:
 # result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
 # result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023?" )
 # result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023 and who is the account executive?" )
-result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical in 2024?" )
+result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical in 2024?" ) #this one is whack!
+# result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical?" )
 print(result.output)
 print(result.all_messages())
