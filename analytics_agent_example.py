@@ -12,13 +12,14 @@
 
 import pandas as pd
 import duckdb
-from dataclasses import dataclass
 import json
-# from tabulate import tabulate
 from pydantic_ai import Agent , Tool , ModelRetry
 from pydantic_ai.models.gemini import GeminiModel
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
 from pydantic_ai import RunContext
+import logfire
+
+logfire.configure(token="pylf_v1_us_3VCs49q8Gxp5971kyVw9ygkhg4BFPws76KX05GsQhjGR" , scrubbing=False)
 
 
 ###############################################################################
@@ -144,8 +145,6 @@ main_agent = Agent(
         "If the user is not asking about data, you can also answer general questions about life, the universe, and everything."
     )
 )
-import logfire
-logfire.configure(token="pylf_v1_us_3VCs49q8Gxp5971kyVw9ygkhg4BFPws76KX05GsQhjGR" , scrubbing=False)
 main_agent.instrument_all()
 
 sql_generation_agent = Agent( model , output_type=str ,
@@ -260,11 +259,6 @@ query_detection_agent = Agent( model , output_type=list[str] ,
                                 tools=[Tool(get_catalog_detect, name="get_catalog_detect", description="Get the data catalog for use in determining what queries can be answered.",max_retries=1)],
 )
 
-# @query_detection_agent.tool_plain
-# async def get_catalog_detect() -> str:
-#     """Get the data catalog."""
-#     return json.dumps(data_catalog)
-
 # result = main_agent.run_sync( "When was the USA founded?" )
 
 # result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
@@ -278,7 +272,7 @@ result = main_agent.run_sync( "What is the revenue for the customer 557th Weathe
 # result = main_agent.run_sync( "Which of our customers are a part of the Army?" )
 # result = main_agent.run_sync( "Which of our customers are a part of the Army vertical?" )
 # result = main_agent.run_sync( "What sales did we make to Army - Yuma Proving Ground in 2024?" ) # it misunderstood the request and computed the revenue
-# result = main_agent.run_sync( "What opportunities did we have with Army - Yuma Proving Ground in 2024?" ) # it misunderstood the request and computed the revenue
+# result = main_agent.run_sync( "What opportunities did we have with Army - Yuma Proving Ground in 2024?" )
 
 print(result.output)
 print(result.all_messages())
