@@ -19,7 +19,7 @@ from pydantic_ai.providers.google_gla import GoogleGLAProvider
 from pydantic_ai import RunContext
 import logfire
 
-logfire.configure(token="pylf_v1_us_3VCs49q8Gxp5971kyVw9ygkhg4BFPws76KX05GsQhjGR" , scrubbing=False)
+logfire.configure(token="pylf_v1_us_3VCs49q8Gxp5971kyVw9ygkhg4BFPws76KX05GsQhjGR" , scrubbing=False , environment="agentic_test")
 
 
 ###############################################################################
@@ -247,6 +247,7 @@ async def query_detection_tool( ctx: RunContext[str] , prompt: str ) -> list[dic
 async def get_catalog_detect() -> str:
     """Get the data catalog."""
     return json.dumps(data_catalog)
+
 query_detection_agent = Agent( model , output_type=list[str] , 
                               system_prompt=(
                                   "Your job is to find and refine one or more natural language queries within the prompt which can be answered by the data tables described in the data catalog. "
@@ -263,11 +264,12 @@ query_detection_agent = Agent( model , output_type=list[str] ,
 
 # result = main_agent.run_sync( "Who is the account executive for the customer 557th Weather Wing?" )
 # result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023?" )
-result = main_agent.run_sync( "What is the revenue for the customer 557th Weather Wing in 2023 and who is the account executive?" )
+result = main_agent.run_sync( "What is the total revenue for the customer 557th Weather Wing in 2024 and who is the account executive?" )
 # result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical in 2024?" )
 # result = main_agent.run_sync( "What is the total revenue for all customers in the army vertical?" )
 
 # result = main_agent.run_sync( "What customers are handled by austin moore?" )
+# result = main_agent.run_sync( "What customers are handled by ira bargon?" )
 
 # result = main_agent.run_sync( "Which of our customers are a part of the Army?" )
 # result = main_agent.run_sync( "Which of our customers are a part of the Army vertical?" )
